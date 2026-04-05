@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import { Editor } from '@tiptap/react';
-import { streamText, tool } from 'ai';
+import { streamText, tool, stepCountIs } from 'ai';
 
 type CoreMessage = { role: 'user' | 'assistant'; content: string };
 import { createOpenAI } from '@ai-sdk/openai';
@@ -36,15 +36,15 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({ editor }) => {
       case 'openai':
         if (!store.openaiKey) throw new Error("OpenAI key not configured");
         const openai = createOpenAI({ apiKey: store.openaiKey });
-        return openai('gpt-4o');
+        return openai(store.model);
       case 'anthropic':
         if (!store.anthropicKey) throw new Error("Anthropic key not configured");
         const anthropic = createAnthropic({ apiKey: store.anthropicKey });
-        return anthropic('claude-3-7-sonnet-20250219');
+        return anthropic(store.model);
       case 'google':
         if (!store.googleKey) throw new Error("Google key not configured");
         const google = createGoogleGenerativeAI({ apiKey: store.googleKey });
-        return google('gemini-2.5-pro');
+        return google(store.model);
       default:
         throw new Error("Invalid provider");
     }
@@ -62,51 +62,208 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({ editor }) => {
     try {
       const model = getModel();
       
-      const systemPrompt = `You are an AI document editor assistant. You have access to tools to modify the current document.
-If the user asks you to modify the document, USE YOUR TOOLS.
-Do not output the edited text directly in the chat unless specifically asked.
-Current Document Text Segment: """${editor.getText().substring(0, 2000)}..."""`;
+      const docText = editor.getText();
+      const systemPrompt = `You are an AI document editor assistant. You have access to tools to modify the current document that is open in a rich-text editor (TipTap).
+
+AVAILABLE TOOLS:
+- "set_document_content": Replace the ENTIRE document with new content. Use for rewriting everything or clearing the document.
+- "replace_text": Find and replace a specific substring. Use for changing specific words or sentences.
+- "insert_at_end": Append new content after existing content.
+- "delete_text": Remove a specific piece of text.
+- "format_text": Apply visual formatting (bold, italic, h1, h2, h3) to text. CRITICAL: You MUST use this tool whenever the user asks to make text bold, bigger, larger, italic, or change heading levels. Do NOT try to format with HTML tags or set_document_content - those won't apply real formatting.
+- "read_document": Read the full document text.
+
+CRITICAL RULES:
+- When the user asks to FORMAT or STYLE text (bold, bigger, heading, italic), you MUST use "format_text". Never use set_document_content or replace_text for formatting.
+- When the user asks to WRITE or CHANGE text content, use the appropriate content tool.
+- Do NOT output edited text in chat. Use tools instead.
+
+WORKFLOW (you MUST follow this exact sequence):
+1. [ANALYSIS]: Analyze the user's request. Is it complex? Do you need more context?
+   - If the request requires looking at specific text not visible in the snippet below, use "read_document" FIRST to plan your edits.
+   - Break down complex requests into a sequence of simpler tool calls.
+2. [EXECUTION]: Make your edits using the appropriate tool(s) based on your analysis.
+3. [VERIFICATION]: ALWAYS call "read_document" to verify your edits had the expected result.
+4. [CONFIRMATION]: If successful, briefly confirm to the user what you did. If it failed, analyze the failure and try again.
+
+Current document snippet:
+"""
+${docText.substring(0, 3000)}
+"""`;
 
       const result = streamText({
         model,
         messages: newMessages,
         system: systemPrompt,
+        stopWhen: stepCountIs(5),
+        onStepFinish({ stepNumber, text, toolCalls, toolResults }) {
+          console.log(`[AI] Step ${stepNumber} finished`, { text: text?.substring(0, 100), toolCalls, toolResults });
+        },
         tools: {
-          replace_text: tool({
-            description: "Replace a specific substring in the document with new text.",
-            parameters: z.object({
-              searchText: z.string().describe("The exact text to find in the document"),
-              replacement: z.string().describe("The new text to replace it with")
+          set_document_content: tool({
+            description: "Replace the ENTIRE document with new content. Use this when the user wants to rewrite everything, clear the document, or replace all content. The content can include HTML tags for formatting like <h1>, <h2>, <p>, <strong>, <em>, <ul>, <li>.",
+            inputSchema: z.object({
+              content: z.string().describe("The new full document content (can include HTML tags for formatting)")
             }),
-            // @ts-ignore
+            execute: async ({ content }) => {
+              console.log('[Tool] set_document_content called with:', content.substring(0, 200));
+              const htmlContent = content.includes('<') ? content : content.split('\n').filter(l => l.trim()).map(l => `<p>${l}</p>`).join('');
+              editor.commands.setContent(htmlContent);
+              return `Document content has been completely replaced with new content.`;
+            }
+          }),
+          replace_text: tool({
+            description: "Find and replace a specific substring in the document. Use for targeted edits.",
+            inputSchema: z.object({
+              searchText: z.string().describe("The exact text to find in the document"),
+              replacement: z.string().describe("The new text to replace it with. Use empty string to delete.")
+            }),
             execute: async ({ searchText, replacement }) => {
+              console.log('[Tool] replace_text called:', { searchText: searchText.substring(0, 50), replacement: replacement.substring(0, 50) });
               const currentText = editor.getText();
               if (currentText.includes(searchText)) {
                 const content = editor.getHTML();
                 const newContent = content.replace(new RegExp(escapeRegExp(searchText), 'g'), replacement);
                 editor.commands.setContent(newContent);
-                return `Replaced "${searchText}" with "${replacement}"`;
+                return `Successfully replaced the text.`;
               }
-              return `Text "${searchText}" not found in document.`;
+              return `Text not found in document. Try using read_document to see the exact current text.`;
+            }
+          }),
+          delete_text: tool({
+            description: "Delete a specific piece of text from the document.",
+            inputSchema: z.object({
+              textToDelete: z.string().describe("The exact text to remove from the document")
+            }),
+            execute: async ({ textToDelete }) => {
+              console.log('[Tool] delete_text called:', textToDelete.substring(0, 50));
+              const currentText = editor.getText();
+              if (currentText.includes(textToDelete)) {
+                const content = editor.getHTML();
+                const newContent = content.replace(new RegExp(escapeRegExp(textToDelete), 'g'), '');
+                editor.commands.setContent(newContent);
+                return `Successfully deleted the specified text.`;
+              }
+              return `Text not found in document.`;
             }
           }),
           insert_at_end: tool({
-            description: "Appends text to the very end of the document",
-            parameters: z.object({
-              text: z.string().describe("The text to append")
+            description: "Appends new content to the end of the document. Content can include HTML.",
+            inputSchema: z.object({
+              text: z.string().describe("The text/HTML to append at the end")
             }),
-            // @ts-ignore
             execute: async ({ text }) => {
-              editor.commands.insertContentAt(editor.state.doc.content.size, `\n${text}`);
-              return `Appended text to document.`;
+              console.log('[Tool] insert_at_end called:', text.substring(0, 100));
+              editor.commands.insertContentAt(editor.state.doc.content.size, text);
+              return `Appended text to the end of the document.`;
             }
           }),
           read_document: tool({
-            description: "Reads the entire document text. Use this if you need to see more than the snippet in the system prompt.",
-            parameters: z.object({}),
-            // @ts-ignore
+            description: "Reads the entire document text. Use this to see the full current content before making changes.",
+            inputSchema: z.object({}),
             execute: async () => {
+              console.log('[Tool] read_document called');
               return editor.getText();
+            }
+          }),
+          format_text: tool({
+            description: "Apply formatting to a specific piece of text in the document. Can make text bold, italic, or convert it to a heading (h1, h2, h3). Use this when the user asks to change the style/appearance of text like making it bigger, bolder, etc.",
+            inputSchema: z.object({
+              text: z.string().describe("The exact text to format"),
+              formatting: z.array(z.enum(['bold', 'italic', 'h1', 'h2', 'h3'])).describe("Array of formatting to apply, e.g. ['bold', 'h1']")
+            }),
+            execute: async ({ text, formatting }) => {
+              console.log('[Tool] format_text called:', { text: text.substring(0, 80), formatting });
+              
+              // Search full document text for position
+              const fullText = editor.getText();
+              const searchIdx = fullText.indexOf(text);
+              
+              if (searchIdx === -1) {
+                console.log('[Tool] format_text: text not found in:', fullText.substring(0, 200));
+                return `Text "${text.substring(0, 50)}" not found in document. Use read_document to see exact text.`;
+              }
+              
+              // Map plain-text offset to ProseMirror position
+              // We need to walk the document to translate the plain-text index to a doc position
+              const doc = editor.state.doc;
+              let charCount = 0;
+              let from = -1;
+              let to = -1;
+              
+              doc.descendants((node, pos) => {
+                if (from !== -1 && to !== -1) return false;
+                
+                if (node.isText && node.text) {
+                  const nodeStart = charCount;
+                  const nodeEnd = charCount + node.text.length;
+                  
+                  // Check if the search range starts in this node
+                  if (from === -1 && searchIdx >= nodeStart && searchIdx < nodeEnd) {
+                    from = pos + (searchIdx - nodeStart);
+                  }
+                  
+                  // Check if the search range ends in this node
+                  if (from !== -1 && to === -1 && (searchIdx + text.length) <= nodeEnd) {
+                    to = pos + (searchIdx + text.length - nodeStart);
+                  }
+                  
+                  charCount = nodeEnd;
+                } else if (node.isBlock && node.content.size === 0) {
+                  // Empty blocks still add a newline in getText()
+                } else if (node.isBlock && pos > 0) {
+                  // Block boundaries add separator characters in getText()
+                  charCount += 1; // newline between blocks
+                }
+              });
+              
+              // Fallback: if precise mapping failed, try direct node search
+              if (from === -1 || to === -1) {
+                doc.descendants((node, pos) => {
+                  if (from !== -1) return false;
+                  if (node.isText && node.text) {
+                    const idx = node.text.indexOf(text);
+                    if (idx !== -1) {
+                      from = pos + idx;
+                      to = from + text.length;
+                      return false;
+                    }
+                  }
+                });
+              }
+              
+              if (from === -1 || to === -1) {
+                return `Could not locate text position. Try a different or shorter text.`;
+              }
+              
+              console.log('[Tool] format_text: found at positions', { from, to });
+              
+              // Build a chain with selection + all formatting
+              let chain = editor.chain().focus().setTextSelection({ from, to });
+              
+              for (const fmt of formatting) {
+                switch (fmt) {
+                  case 'bold':
+                    chain = chain.setBold();
+                    break;
+                  case 'italic':
+                    chain = chain.setItalic();
+                    break;
+                  case 'h1':
+                    chain = chain.setHeading({ level: 1 });
+                    break;
+                  case 'h2':
+                    chain = chain.setHeading({ level: 2 });
+                    break;
+                  case 'h3':
+                    chain = chain.setHeading({ level: 3 });
+                    break;
+                }
+              }
+              
+              chain.run();
+              
+              return `Applied formatting [${formatting.join(', ')}] to "${text.substring(0, 50)}".`;
             }
           })
         }
@@ -123,14 +280,19 @@ Current Document Text Segment: """${editor.getText().substring(0, 2000)}..."""`;
           return updated;
         });
       }
-      
-      // We must await tool calls if they happen, streamText handles it automatically with maxSteps
-      // Once it completes, the final state of messages can be extracted, but streamText manages the loop.
-      // We will just fetch the final message list from result.response if needed, but for now we appended text visually.
+
+      // If the AI only called tools and didn't produce text, show a default confirmation
+      if (!fullResponse.trim()) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { role: 'assistant', content: '✅ Done! I\'ve updated the document.' };
+          return updated;
+        });
+      }
       
     } catch (e: any) {
       console.error(e);
-      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${e.message}. Please check your API keys.` }]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${e.message}. Please check your API keys in Settings.` }]);
     } finally {
       setIsLoading(false);
     }
