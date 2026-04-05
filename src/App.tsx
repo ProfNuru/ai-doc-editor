@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import CharacterCount from '@tiptap/extension-character-count';
+import Underline from '@tiptap/extension-underline';
 import { EditorPane } from './components/EditorPane';
 import { ChatWidget } from './components/ChatWidget';
 import { useStore } from './store/useStore';
@@ -18,8 +19,9 @@ function App() {
     extensions: [
       StarterKit,
       CharacterCount,
+      Underline,
     ],
-    content: '<p>Start typing or ask the AI to write something...</p>',
+    content: '',
     editorProps: {
       attributes: {
         class: 'prose dark:prose-invert max-w-none focus:outline-none min-h-[500px] h-full w-full',

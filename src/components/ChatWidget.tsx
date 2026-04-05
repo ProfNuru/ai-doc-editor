@@ -70,7 +70,7 @@ AVAILABLE TOOLS:
 - "replace_text": Find and replace a specific substring. Use for changing specific words or sentences.
 - "insert_at_end": Append new content after existing content.
 - "delete_text": Remove a specific piece of text.
-- "format_text": Apply visual formatting (bold, italic, h1, h2, h3) to text. CRITICAL: You MUST use this tool whenever the user asks to make text bold, bigger, larger, italic, or change heading levels. Do NOT try to format with HTML tags or set_document_content - those won't apply real formatting.
+- "format_text": Apply visual formatting (bold, italic, underline, h1, h2, h3) to text. CRITICAL: You MUST use this tool whenever the user asks to make text bold, bigger, larger, italic, underline, or change heading levels. Do NOT try to format with HTML tags or set_document_content - those won't apply real formatting.
 - "read_document": Read the full document text.
 
 CRITICAL RULES:
@@ -167,10 +167,10 @@ ${docText.substring(0, 3000)}
             }
           }),
           format_text: tool({
-            description: "Apply formatting to a specific piece of text in the document. Can make text bold, italic, or convert it to a heading (h1, h2, h3). Use this when the user asks to change the style/appearance of text like making it bigger, bolder, etc.",
+            description: "Apply formatting to a specific piece of text in the document. Can make text bold, italic, underline, or convert it to a heading (h1, h2, h3). Use this when the user asks to change the style/appearance of text like making it bigger, bolder, etc.",
             inputSchema: z.object({
               text: z.string().describe("The exact text to format"),
-              formatting: z.array(z.enum(['bold', 'italic', 'h1', 'h2', 'h3'])).describe("Array of formatting to apply, e.g. ['bold', 'h1']")
+              formatting: z.array(z.enum(['bold', 'italic', 'underline', 'h1', 'h2', 'h3'])).describe("Array of formatting to apply, e.g. ['bold', 'h1']")
             }),
             execute: async ({ text, formatting }) => {
               console.log('[Tool] format_text called:', { text: text.substring(0, 80), formatting });
@@ -248,6 +248,9 @@ ${docText.substring(0, 3000)}
                     break;
                   case 'italic':
                     chain = chain.setItalic();
+                    break;
+                  case 'underline':
+                    chain = chain.setUnderline();
                     break;
                   case 'h1':
                     chain = chain.setHeading({ level: 1 });

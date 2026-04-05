@@ -21,6 +21,7 @@
     "@tauri-apps/plugin-store": "^2.4.2",
     "@tiptap/extension-character-count": "^3.22.1",
     "@tiptap/extension-heading": "^3.22.1",
+    "@tiptap/extension-underline": "^3.22.2",
     "@tiptap/pm": "^3.22.1",
     "@tiptap/react": "^3.22.1",
     "@tiptap/starter-kit": "^3.22.1",
